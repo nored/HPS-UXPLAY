@@ -1,0 +1,408 @@
+#!/bin/sh
+# =============================================================================
+# UxPlay Wrapper with Splash Screen Lifecycle
+# =============================================================================
+# Manages splash display: shows when idle, hides when AirPlay connects
+# Uses fbi for display (fbv has issues with this workflow)
+#
+# Place your splash template at: /boot/splash-template.png
+# Or: /usr/share/uxplay/splash-template.png
+
+CONFIG_FILE="/etc/uxplay/config.json"
+SPLASH_DIR="/var/run/uxplay-splash"
+OUTPUT_IMAGE="$SPLASH_DIR/splash.png"
+
+# Template locations (in priority order)
+TEMPLATE_LOCATIONS="
+/usr/share/uxplay/splash-template.png
+/boot/splash-template.png
+/etc/uxplay/splash-template.png
+"
+
+# Default coordinates (can be overridden in config.json splash section)
+ROOM_COORDS="+960+650"
+PIN_COORDS="+960+720"
+FONT_SIZE=48
+FONT_COLOR="black"
+FONT_PATH=""
+
+# Find font
+for f in \
+    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf" \
+    "/usr/share/fonts/ttf-dejavu/DejaVuSans-Bold.ttf" \
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" \
+    "/usr/share/fonts/DejaVuSans-Bold.ttf"
+do
+    [ -f "$f" ] && FONT_PATH="$f" && break
+done
+
+mkdir -p "$SPLASH_DIR"
+
+# -----------------------------------------------------------------------------
+# JSON parsing (works without jq)
+# -----------------------------------------------------------------------------
+json_get() {
+    local key="$1"
+    sed -n 's/.*"'"$key"'"\s*:\s*"\([^"]*\)".*/\1/p' | head -1
+}
+
+json_get_nested() {
+    # For nested values like splash.room_coords
+    local outer="$1"
+    local inner="$2"
+    grep -A20 "\"$outer\"" | json_get "$inner"
+}
+
+get_config() {
+    [ -f "$CONFIG_FILE" ] && cat "$CONFIG_FILE" | json_get "$1"
+}
+
+get_splash_config() {
+    [ -f "$CONFIG_FILE" ] && cat "$CONFIG_FILE" | json_get_nested "splash" "$1"
+}
+
+# Load splash coordinates from config
+load_splash_settings() {
+    local rc=$(get_splash_config "room_coords")
+    local pc=$(get_splash_config "pin_coords")
+    local fs=$(get_splash_config "font_size")
+    local fc=$(get_splash_config "font_color")
+    
+    [ -n "$rc" ] && ROOM_COORDS="$rc"
+    [ -n "$pc" ] && PIN_COORDS="$pc"
+    [ -n "$fs" ] && FONT_SIZE="$fs"
+    [ -n "$fc" ] && FONT_COLOR="$fc"
+}
+
+# -----------------------------------------------------------------------------
+# Daily password management
+# -----------------------------------------------------------------------------
+DAILY_PASSWORD_FILE="/var/run/uxplay-daily-password"
+
+generate_random_password() {
+    # Generate 6-digit numeric password (easy to enter)
+    head -c 100 /dev/urandom 2>/dev/null | tr -dc '0-9' | head -c 6
+}
+
+get_daily_password() {
+    local today=$(date +%Y%m%d)
+    local stored_date=""
+    local stored_pass=""
+    
+    # Check if we have a valid password for today
+    if [ -f "$DAILY_PASSWORD_FILE" ]; then
+        stored_date=$(head -1 "$DAILY_PASSWORD_FILE")
+        stored_pass=$(tail -1 "$DAILY_PASSWORD_FILE")
+    fi
+    
+    if [ "$stored_date" = "$today" ] && [ -n "$stored_pass" ]; then
+        # Use existing password
+        echo "$stored_pass"
+    else
+        # Generate new password for today
+        local new_pass=$(generate_random_password)
+        echo "$today" > "$DAILY_PASSWORD_FILE"
+        echo "$new_pass" >> "$DAILY_PASSWORD_FILE"
+        chmod 600 "$DAILY_PASSWORD_FILE"
+        logger -t uxplay-wrapper "Generated new daily password"
+        echo "$new_pass"
+    fi
+}
+
+# Get the effective password based on password_mode
+get_effective_password() {
+    local password_mode=$(get_config "password_mode")
+    local fixed_password=$(get_config "password")
+    
+    case "$password_mode" in
+        daily)
+            get_daily_password
+            ;;
+        fixed)
+            echo "$fixed_password"
+            ;;
+        *)
+            # none or unset
+            echo ""
+            ;;
+    esac
+}
+
+# -----------------------------------------------------------------------------
+# Find template image
+# -----------------------------------------------------------------------------
+find_template() {
+    for loc in $TEMPLATE_LOCATIONS; do
+        [ -f "$loc" ] && echo "$loc" && return 0
+    done
+    return 1
+}
+
+# -----------------------------------------------------------------------------
+# Get framebuffer resolution
+# -----------------------------------------------------------------------------
+get_fb_resolution() {
+    if [ -f /sys/class/graphics/fb0/virtual_size ]; then
+        cat /sys/class/graphics/fb0/virtual_size | tr ',' 'x'
+    else
+        echo "1920x1080"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Generate splash (overlay text on template)
+# -----------------------------------------------------------------------------
+generate_splash() {
+    load_splash_settings
+    
+    local ROOM=$(get_config "room_name")
+    local PIN_MODE=$(get_config "pin_mode")
+    local PIN=$(get_config "pin")
+    local PASSWORD_MODE=$(get_config "password_mode")
+    local TEMPLATE=$(find_template)
+    local RESOLUTION=$(get_fb_resolution)
+    
+    [ -z "$ROOM" ] && ROOM="Tagungsraum"
+    
+    logger -t uxplay-splash "Generating splash: Room=$ROOM PIN_MODE=$PIN_MODE PASSWORD_MODE=$PASSWORD_MODE"
+    
+    if [ -z "$TEMPLATE" ]; then
+        logger -t uxplay-splash "WARNING: No template found, generating simple splash"
+        generate_simple_splash "$ROOM" "$PIN_MODE" "$PIN"
+        return
+    fi
+    
+    # Build annotation text
+    local ROOM_TEXT="Room: $ROOM"
+    local AUTH_TEXT=""
+    
+    # Password takes precedence over PIN
+    case "$PASSWORD_MODE" in
+        daily)
+            local daily_pw=$(get_daily_password)
+            AUTH_TEXT="Password: $daily_pw"
+            ;;
+        fixed)
+            local fixed_pw=$(get_config "password")
+            [ -n "$fixed_pw" ] && AUTH_TEXT="Password: $fixed_pw"
+            ;;
+        *)
+            # No password, check PIN
+            case "$PIN_MODE" in
+                fixed)  AUTH_TEXT="PIN: $PIN" ;;
+                random) AUTH_TEXT="PIN: Siehe Display" ;;
+                *)      ;;  # No auth annotation
+            esac
+            ;;
+    esac
+    
+    # Build ImageMagick command
+    local font_opt=""
+    [ -n "$FONT_PATH" ] && [ -f "$FONT_PATH" ] && font_opt="-font $FONT_PATH"
+    
+    local cmd="magick"
+    command -v magick >/dev/null 2>&1 || cmd="convert"
+    
+    if [ -n "$AUTH_TEXT" ]; then
+        $cmd "$TEMPLATE" \
+            -fill "$FONT_COLOR" -strokewidth 2 -pointsize "$FONT_SIZE" \
+            $font_opt \
+            -annotate "$ROOM_COORDS" "$ROOM_TEXT" \
+            -annotate "$PIN_COORDS" "$AUTH_TEXT" \
+            -resize "${RESOLUTION}!" \
+            "$OUTPUT_IMAGE"
+    else
+        $cmd "$TEMPLATE" \
+            -fill "$FONT_COLOR" -strokewidth 2 -pointsize "$FONT_SIZE" \
+            $font_opt \
+            -annotate "$ROOM_COORDS" "$ROOM_TEXT" \
+            -resize "${RESOLUTION}!" \
+            "$OUTPUT_IMAGE"
+    fi
+    
+    logger -t uxplay-splash "Generated: $OUTPUT_IMAGE ($RESOLUTION)"
+}
+
+# Fallback if no template
+generate_simple_splash() {
+    local room="$1"
+    local pin_mode="$2"
+    local pin="$3"
+    local res=$(get_fb_resolution)
+    local w=$(echo $res | cut -dx -f1)
+    local h=$(echo $res | cut -dx -f2)
+    
+    local pin_text=""
+    [ "$pin_mode" = "fixed" ] && pin_text="PIN: $pin"
+    [ "$pin_mode" = "random" ] && pin_text="PIN: See Display"
+    
+    local cmd="magick"
+    command -v magick >/dev/null 2>&1 || cmd="convert"
+    
+    $cmd -size "$res" xc:'#2d5016' \
+        -fill white -pointsize $((h/10)) -gravity Center \
+        -annotate +0-$((h/8)) "$room" \
+        -pointsize $((h/16)) \
+        -annotate +0+$((h/16)) "$pin_text" \
+        -pointsize $((h/24)) \
+        -annotate +0+$((h/5)) "AirPlay Ready" \
+        "$OUTPUT_IMAGE"
+}
+
+# -----------------------------------------------------------------------------
+# Display splash using fbi
+# -----------------------------------------------------------------------------
+show_splash() {
+    # Kill psplash first
+    if [ -e /tmp/psplash_fifo ]; then
+        echo "QUIT" > /tmp/psplash_fifo 2>/dev/null || true
+    fi
+    killall psplash 2>/dev/null || true
+    
+    # Kill any existing fbi
+    killall fbi 2>/dev/null || true
+    
+    sleep 0.5
+    
+    # Generate if needed
+    [ ! -f "$OUTPUT_IMAGE" ] && generate_splash
+    
+    if [ ! -f "$OUTPUT_IMAGE" ]; then
+        logger -t uxplay-splash "ERROR: No splash image"
+        return 1
+    fi
+    
+    # Display with fbi
+    if command -v fbi >/dev/null 2>&1; then
+        fbi -T 1 -a --noverbose "$OUTPUT_IMAGE" &
+        logger -t uxplay-splash "Splash displayed (fbi)"
+    else
+        logger -t uxplay-splash "ERROR: fbi not found"
+        return 1
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Hide splash
+# -----------------------------------------------------------------------------
+hide_splash() {
+    killall fbi 2>/dev/null || true
+    logger -t uxplay-splash "Splash hidden"
+}
+
+# -----------------------------------------------------------------------------
+# Build uxplay arguments from config
+# -----------------------------------------------------------------------------
+build_uxplay_args() {
+    local args=""
+    
+    local room=$(get_config "room_name")
+    local pin_mode=$(get_config "pin_mode")
+    local pin=$(get_config "pin")
+    local password=$(get_effective_password)
+    local resolution=$(get_config "resolution")
+    local fps=$(get_config "fps")
+    local videosink=$(get_config "videosink")
+    local audiosink=$(get_config "audiosink")
+    local vsync=$(get_config "vsync")
+    local volume=$(get_config "volume")
+    local color_space=$(get_config "color_space")
+    local extra_opts=$(get_config "extra_opts")
+    
+    # Server name (always use -nh to hide hostname)
+    [ -n "$room" ] && args="$args -n \"$room\""
+    args="$args -nh"
+    
+    # Password takes precedence over PIN if set
+    if [ -n "$password" ]; then
+        args="$args -pw $password"
+    else
+        # PIN handling (-pin for 4-digit PIN)
+        [ "$pin_mode" = "fixed" ] && [ -n "$pin" ] && args="$args -pin $pin"
+        [ "$pin_mode" = "random" ] && args="$args -pin"
+    fi
+    
+    # Resolution and framerate
+    [ -n "$resolution" ] && args="$args -s $resolution"
+    [ -n "$fps" ] && args="$args -fps $fps"
+    
+    # Video/audio sinks - handle quoted values
+    [ -n "$videosink" ] && [ "$videosink" != "autovideosink" ] && args="$args -vs \"$videosink\""
+    [ -n "$audiosink" ] && [ "$audiosink" != "autoaudiosink" ] && args="$args -as \"$audiosink\""
+    
+    # vsync: "0" or "no" disables
+    if [ -n "$vsync" ]; then
+        case "$vsync" in
+            0|no|false) args="$args -vsync 0" ;;
+            1|yes|true) args="$args -vsync 1" ;;
+        esac
+    fi
+    
+    # Volume (0.0 - 1.0)
+    [ -n "$volume" ] && args="$args -vol $volume"
+    
+    # Color space (bt709, etc)
+    [ -n "$color_space" ] && [ "$color_space" != "none" ] && args="$args -$color_space"
+    
+    # Extra args (pass-through for any other flags like -p for portrait)
+    [ -n "$extra_opts" ] && args="$args $extra_opts"
+    
+    echo "$args"
+}
+
+# -----------------------------------------------------------------------------
+# Run UxPlay with splash lifecycle
+# -----------------------------------------------------------------------------
+run_uxplay_with_splash() {
+    local uxplay_args=$(build_uxplay_args)
+    
+    logger -t uxplay-wrapper "Starting: uxplay $uxplay_args"
+    
+    # Show splash initially
+    generate_splash
+    show_splash
+    
+    # Run uxplay and monitor for connection events
+    eval "uxplay $uxplay_args" 2>&1 | while IFS= read -r line; do
+        echo "$line"
+        
+        # Connection started - hide splash
+        if echo "$line" | grep -qiE "raop_rtp.*start|connection.*from|client.*connect|mirror.*start"; then
+            logger -t uxplay-wrapper "AirPlay connected"
+            hide_splash
+        fi
+        
+        # Connection ended - show splash
+        if echo "$line" | grep -qiE "raop_rtp.*stop|client.*disconnect|connection.*closed|mirror.*stop|client.*left"; then
+            logger -t uxplay-wrapper "AirPlay disconnected"
+            sleep 1
+            show_splash
+        fi
+    done
+    
+    # UxPlay exited - show splash
+    logger -t uxplay-wrapper "UxPlay exited"
+    show_splash
+}
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+case "${1:-run}" in
+    run)
+        run_uxplay_with_splash
+        ;;
+    generate)
+        generate_splash
+        ;;
+    show)
+        generate_splash
+        show_splash
+        ;;
+    hide)
+        hide_splash
+        ;;
+    *)
+        echo "Usage: $0 {run|generate|show|hide}"
+        ;;
+esac

@@ -1,0 +1,49 @@
+#!/bin/sh
+
+SSID="$1"
+PASSPHRASE="$2"
+
+if [ -z "$SSID" ] || [ -z "$PASSPHRASE" ]; then
+    echo "Usage: $0 <SSID> <PASSPHRASE>"
+    exit 1
+fi
+
+# Remove quotes if present
+SSID=$(echo "$SSID" | sed 's/^"//;s/"$//')
+PASSPHRASE=$(echo "$PASSPHRASE" | sed 's/^"//;s/"$//')
+
+echo "Creating WiFi configuration for SSID: $SSID"
+
+# Create iwd directory
+mkdir -p /var/lib/iwd
+
+# Generate PSK using wpa_passphrase and extract the PSK
+PSK=$(wpa_passphrase "$SSID" "$PASSPHRASE" | grep "psk=" | grep -v "#psk=" | cut -d'=' -f2)
+
+# Determine filename based on SSID content (from arch wiki rules)
+if echo "$SSID" | grep -q '^[a-zA-Z0-9_ -]*$'; then
+    # SSID contains only alphanumeric, space, underscore, or dash
+    FILENAME="$SSID.psk"
+else
+    # SSID contains special characters - hex encode it
+    HEX_SSID=$(printf '%s' "$SSID" | xxd -p | tr -d '\n')
+    FILENAME="=$HEX_SSID.psk"
+fi
+
+CONFIG_FILE="/var/lib/iwd/$FILENAME"
+
+# Create iwd config file with PSK
+cat > "$CONFIG_FILE" << EOL
+[Security]
+Passphrase=$PASSPHRASE
+PreSharedKey=$PSK
+
+[Settings]
+AutoConnect=true
+EOL
+
+chmod 600 "$CONFIG_FILE"
+
+echo "WiFi configuration created: $CONFIG_FILE"
+echo "PSK: $PSK"
+exit 0

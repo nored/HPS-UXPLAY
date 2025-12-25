@@ -1,0 +1,78 @@
+# =============================================================================
+# UxPlay Device Configuration
+# =============================================================================
+# Place this file on the SD card boot partition as: settings.cfg
+# Device will auto-configure on first boot
+#
+# Only NAME is required - everything else has sensible defaults
+
+# -----------------------------------------------------------------------------
+# Device Identity (REQUIRED)
+# -----------------------------------------------------------------------------
+NAME="Tagungsraum A"
+
+# -----------------------------------------------------------------------------
+# Network Mode
+# -----------------------------------------------------------------------------
+# For Ethernet (USB adapter): set LANONLY=yes (or leave SSID empty)
+# For WiFi: set SSID and PASSPHRASE
+LANONLY="no"
+SSID="HPS-Protected"
+PASSPHRASE="YourWiFiPassword"
+
+# -----------------------------------------------------------------------------
+# AirPlay PIN / Password
+# -----------------------------------------------------------------------------
+# PIN: 4-digit code (-pin option)
+PIN="1234"
+# PIN_MODE: "fixed" (always same PIN), "random" (new PIN each session), "none" (no PIN)
+PIN_MODE="fixed"
+
+# PASSWORD: Alternative to PIN, uses -pw option
+# PASSWORD_MODE: "fixed" (use PASSWORD value), "daily" (random, changes daily), "none"
+PASSWORD_MODE="daily"
+# PASSWORD="secret"  # Only used if PASSWORD_MODE="fixed"
+
+# -----------------------------------------------------------------------------
+# UxPlay Display Options
+# -----------------------------------------------------------------------------
+RESOLUTION="1024x768"
+FPS="30"
+VSYNC="0"
+VOLUME="0.3"
+COLOR_SPACE="bt709"
+
+# Video/Audio sinks (advanced)
+VIDEOSINK="kmssink force_modesetting=true"
+AUDIOSINK="autoaudiosink"
+
+# Extra UxPlay arguments (appended to command line)
+# UXPLAY_EXTRA="-p"
+
+# -----------------------------------------------------------------------------
+# MQTT Fleet Management
+# -----------------------------------------------------------------------------
+MQTT_BROKER="mqtt.local"
+MQTT_PORT="1883"
+# MQTT_USER=""
+# MQTT_PASS=""
+
+# -----------------------------------------------------------------------------
+# OTA Updates
+# -----------------------------------------------------------------------------
+# UPDATE_MODE: "github" or "mirror"
+UPDATE_MODE="github"
+# For GitHub:
+UPDATE_REPO="nored/apserver"
+# For mirror:
+# UPDATE_MODE="mirror"
+# UPDATE_MIRROR_URL="https://updates.example.com/uxplay"
+
+# -----------------------------------------------------------------------------
+# Splash Screen Text Positions (optional)
+# -----------------------------------------------------------------------------
+# Coordinates are ImageMagick format: +X+Y from top-left
+SPLASH_ROOM_COORDS="+100+650"
+SPLASH_PIN_COORDS="+100+720"
+SPLASH_FONT_SIZE="48"
+SPLASH_FONT_COLOR="black"

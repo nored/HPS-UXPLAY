@@ -1,0 +1,527 @@
+#!/bin/sh
+# =============================================================================
+# UxPlay Fleet Agent (Shell Version)
+# =============================================================================
+# Lightweight MQTT-based config and monitoring agent for Buildroot
+# Works with BusyBox init (inittab)
+#
+# Requires: mosquitto_sub, mosquitto_pub, jq (optional but recommended)
+
+set -e
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+CONFIG_FILE="/etc/uxplay/config.json"
+UXPLAYRC_FILE="/etc/uxplay/uxplayrc"
+STATE_DIR="/var/run/uxplay-agent"
+PID_FILE="$STATE_DIR/agent.pid"
+
+# MQTT settings - can be overridden via /boot/mqtt.conf
+MQTT_BROKER="${MQTT_BROKER:-mqtt.local}"
+MQTT_PORT="${MQTT_PORT:-1883}"
+MQTT_USER="${MQTT_USER:-}"
+MQTT_PASS="${MQTT_PASS:-}"
+
+# Load broker config from boot partition if exists
+[ -f /boot/mqtt.conf ] && . /boot/mqtt.conf
+
+# Intervals
+STATUS_INTERVAL=30
+WATCHDOG_INTERVAL=15
+
+# -----------------------------------------------------------------------------
+# Device Identity
+# -----------------------------------------------------------------------------
+get_device_id() {
+    # Try eth0, then wlan0
+    for iface in eth0 wlan0; do
+        if [ -f "/sys/class/net/$iface/address" ]; then
+            cat "/sys/class/net/$iface/address" | tr -d ':'
+            return
+        fi
+    done
+    # Fallback to machine-id hash
+    if [ -f /etc/machine-id ]; then
+        head -c 12 /etc/machine-id
+    else
+        hostname | md5sum | head -c 12
+    fi
+}
+
+get_mac_address() {
+    for iface in eth0 wlan0; do
+        if [ -f "/sys/class/net/$iface/address" ]; then
+            cat "/sys/class/net/$iface/address"
+            return
+        fi
+    done
+    echo "00:00:00:00:00:00"
+}
+
+get_ip_address() {
+    ip route get 8.8.8.8 2>/dev/null | grep -oP 'src \K[0-9.]+' || \
+    hostname -I 2>/dev/null | awk '{print $1}' || \
+    echo "0.0.0.0"
+}
+
+DEVICE_ID=$(get_device_id)
+TOPIC_BASE="uxplay/devices/$DEVICE_ID"
+
+# -----------------------------------------------------------------------------
+# MQTT Helpers
+# -----------------------------------------------------------------------------
+mqtt_auth_opts() {
+    local opts=""
+    [ -n "$MQTT_USER" ] && opts="$opts -u $MQTT_USER"
+    [ -n "$MQTT_PASS" ] && opts="$opts -P $MQTT_PASS"
+    echo "$opts"
+}
+
+mqtt_pub() {
+    local topic="$1"
+    local message="$2"
+    local retain="${3:-}"
+    local opts=$(mqtt_auth_opts)
+    [ "$retain" = "-r" ] && opts="$opts -r"
+    echo "$message" | mosquitto_pub -h "$MQTT_BROKER" -p "$MQTT_PORT" $opts -t "$topic" -s
+}
+
+mqtt_sub() {
+    local topic="$1"
+    local opts=$(mqtt_auth_opts)
+    mosquitto_sub -h "$MQTT_BROKER" -p "$MQTT_PORT" $opts -t "$topic" -v
+}
+
+# -----------------------------------------------------------------------------
+# JSON Helpers (works with or without jq)
+# -----------------------------------------------------------------------------
+json_get() {
+    local json="$1"
+    local key="$2"
+    if command -v jq >/dev/null 2>&1; then
+        echo "$json" | jq -r ".$key // empty"
+    else
+        # Crude but works for simple flat JSON
+        echo "$json" | grep -oP "\"$key\"\s*:\s*\"?\K[^,\"}]+" | head -1
+    fi
+}
+
+json_get_bool() {
+    local json="$1"
+    local key="$2"
+    local val=$(json_get "$json" "$key")
+    [ "$val" = "true" ] && echo "1" || echo "0"
+}
+
+# -----------------------------------------------------------------------------
+# Status Reporting
+# -----------------------------------------------------------------------------
+get_uptime() {
+    cut -d. -f1 /proc/uptime
+}
+
+get_load() {
+    cat /proc/loadavg | cut -d' ' -f1-3 | tr ' ' ','
+}
+
+get_memory() {
+    local total=$(grep MemTotal /proc/meminfo | awk '{print int($2/1024)}')
+    local free=$(grep MemAvailable /proc/meminfo | awk '{print int($2/1024)}')
+    echo "$total,$free"
+}
+
+get_cpu_temp() {
+    if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
+        awk '{printf "%.1f", $1/1000}' /sys/class/thermal/thermal_zone0/temp
+    else
+        echo "0"
+    fi
+}
+
+is_uxplay_running() {
+    pgrep -x uxplay >/dev/null 2>&1 && echo "true" || echo "false"
+}
+
+get_uxplay_pid() {
+    pgrep -x uxplay 2>/dev/null | head -1 || echo "null"
+}
+
+get_room_name() {
+    if [ -f "$CONFIG_FILE" ]; then
+        json_get "$(cat $CONFIG_FILE)" "room_name"
+    else
+        echo "UxPlay"
+    fi
+}
+
+get_config_version() {
+    if [ -f "$CONFIG_FILE" ]; then
+        json_get "$(cat $CONFIG_FILE)" "config_version"
+    fi
+}
+
+publish_status() {
+    local online="${1:-true}"
+    local mem=$(get_memory)
+    local mem_total=$(echo "$mem" | cut -d, -f1)
+    local mem_free=$(echo "$mem" | cut -d, -f2)
+    local load=$(get_load)
+    local load1=$(echo "$load" | cut -d, -f1)
+    local load5=$(echo "$load" | cut -d, -f2)
+    local load15=$(echo "$load" | cut -d, -f3)
+    
+    local status=$(cat <<EOF
+{
+  "device_id": "$DEVICE_ID",
+  "hostname": "$(hostname)",
+  "room_name": "$(get_room_name)",
+  "ip": "$(get_ip_address)",
+  "mac": "$(get_mac_address)",
+  "uptime": $(get_uptime),
+  "load": [$load1, $load5, $load15],
+  "memory_total_mb": $mem_total,
+  "memory_free_mb": $mem_free,
+  "cpu_temp": $(get_cpu_temp),
+  "uxplay_running": $(is_uxplay_running),
+  "uxplay_pid": $(get_uxplay_pid),
+  "config_version": "$(get_config_version)",
+  "last_seen": "$(date -Iseconds 2>/dev/null || date)",
+  "online": $online
+}
+EOF
+)
+    mqtt_pub "$TOPIC_BASE/status" "$status" -r
+}
+
+publish_ack() {
+    local cmd="$1"
+    local status="$2"
+    local extra="${3:-}"
+    
+    local ack="{\"command\":\"$cmd\",\"status\":\"$status\",\"timestamp\":\"$(date -Iseconds 2>/dev/null || date)\"$extra}"
+    mqtt_pub "$TOPIC_BASE/ack" "$ack"
+}
+
+announce() {
+    local msg="{\"device_id\":\"$DEVICE_ID\",\"ip\":\"$(get_ip_address)\",\"mac\":\"$(get_mac_address)\"}"
+    mqtt_pub "uxplay/discover" "$msg"
+    logger -t uxplay-agent "Announced on uxplay/discover"
+}
+
+# -----------------------------------------------------------------------------
+# Configuration Management
+# -----------------------------------------------------------------------------
+save_config() {
+    local json="$1"
+    mkdir -p "$(dirname $CONFIG_FILE)"
+    echo "$json" > "$CONFIG_FILE"
+    
+    # Generate uxplayrc from config
+    generate_uxplayrc
+    
+    logger -t uxplay-agent "Config saved to $CONFIG_FILE"
+}
+
+generate_uxplayrc() {
+    [ ! -f "$CONFIG_FILE" ] && return
+    
+    local cfg=$(cat "$CONFIG_FILE")
+    local room_name=$(json_get "$cfg" "room_name")
+    local pin_mode=$(json_get "$cfg" "pin_mode")
+    local pin=$(json_get "$cfg" "pin")
+    local password=$(json_get "$cfg" "password")
+    local resolution=$(json_get "$cfg" "resolution")
+    local fps=$(json_get "$cfg" "fps")
+    local fullscreen=$(json_get "$cfg" "fullscreen")
+    local videosink=$(json_get "$cfg" "videosink")
+    local audiosink=$(json_get "$cfg" "audiosink")
+    local vsync=$(json_get "$cfg" "vsync")
+    local port_base=$(json_get "$cfg" "port_base")
+    
+    mkdir -p "$(dirname $UXPLAYRC_FILE)"
+    
+    cat > "$UXPLAYRC_FILE" <<EOF
+# Auto-generated by uxplay-agent
+n $room_name
+nh
+EOF
+
+    [ "$pin_mode" = "fixed" ] && [ -n "$pin" ] && echo "pin $pin" >> "$UXPLAYRC_FILE"
+    [ "$pin_mode" = "random" ] && echo "pin" >> "$UXPLAYRC_FILE"
+    [ -n "$password" ] && [ ${#password} -ge 6 ] && echo "pw $password" >> "$UXPLAYRC_FILE"
+    [ -n "$resolution" ] && echo "s $resolution" >> "$UXPLAYRC_FILE"
+    [ -n "$fps" ] && echo "fps $fps" >> "$UXPLAYRC_FILE"
+    [ "$fullscreen" = "true" ] && echo "fs" >> "$UXPLAYRC_FILE"
+    [ -n "$videosink" ] && [ "$videosink" != "autovideosink" ] && echo "vs $videosink" >> "$UXPLAYRC_FILE"
+    [ -n "$audiosink" ] && [ "$audiosink" != "autoaudiosink" ] && echo "as $audiosink" >> "$UXPLAYRC_FILE"
+    [ "$vsync" = "no" ] && echo "vsync no" >> "$UXPLAYRC_FILE"
+    [ -n "$port_base" ] && echo "p $port_base" >> "$UXPLAYRC_FILE"
+    
+    logger -t uxplay-agent "Generated $UXPLAYRC_FILE"
+}
+
+apply_config() {
+    local json="$1"
+    
+    save_config "$json"
+    
+    local enabled=$(json_get "$json" "enabled")
+    local hostname_new=$(json_get "$json" "hostname")
+    
+    # Update hostname if changed
+    if [ -n "$hostname_new" ] && [ "$hostname_new" != "$(hostname)" ]; then
+        echo "$hostname_new" > /etc/hostname
+        hostname "$hostname_new"
+        logger -t uxplay-agent "Hostname changed to $hostname_new"
+    fi
+    
+    # Update splash screen
+    if [ -x /usr/bin/uxplay-splash ]; then
+        /usr/bin/uxplay-splash update &
+    fi
+    
+    # Restart uxplay
+    if [ "$enabled" != "false" ]; then
+        restart_uxplay
+    else
+        stop_uxplay
+    fi
+    
+    publish_ack "config" "applied"
+    publish_status
+}
+
+# -----------------------------------------------------------------------------
+# UxPlay Control
+# -----------------------------------------------------------------------------
+stop_uxplay() {
+    logger -t uxplay-agent "Stopping UxPlay..."
+    pkill -f uxplay-wrapper 2>/dev/null || true
+    pkill -x uxplay 2>/dev/null || true
+    sleep 1
+    pkill -9 -f uxplay-wrapper 2>/dev/null || true
+    pkill -9 -x uxplay 2>/dev/null || true
+}
+
+start_uxplay() {
+    if pgrep -x uxplay >/dev/null 2>&1; then
+        logger -t uxplay-agent "UxPlay already running"
+        return
+    fi
+    
+    logger -t uxplay-agent "Starting UxPlay..."
+    
+    # Use wrapper if available (handles splash lifecycle)
+    if [ -x /usr/bin/uxplay-wrapper ]; then
+        /usr/bin/uxplay-wrapper run &
+    elif [ -f "$UXPLAYRC_FILE" ]; then
+        uxplay -rc "$UXPLAYRC_FILE" &
+    else
+        uxplay -nh -n "$(get_room_name)" &
+    fi
+}
+
+restart_uxplay() {
+    stop_uxplay
+    sleep 1
+    start_uxplay
+}
+
+# -----------------------------------------------------------------------------
+# Command Handling
+# -----------------------------------------------------------------------------
+handle_command() {
+    local payload="$1"
+    local cmd=$(json_get "$payload" "command")
+    
+    logger -t uxplay-agent "Received command: $cmd"
+    
+    case "$cmd" in
+        reboot)
+            publish_ack "reboot" "executing"
+            sync
+            sleep 1
+            reboot
+            ;;
+        restart_uxplay)
+            restart_uxplay
+            publish_ack "restart_uxplay" "done"
+            ;;
+        stop_uxplay)
+            stop_uxplay
+            publish_ack "stop_uxplay" "done"
+            ;;
+        start_uxplay)
+            start_uxplay
+            publish_ack "start_uxplay" "done"
+            ;;
+        identify)
+            # Try to flash screen or beep
+            echo "IDENTIFY" > /dev/tty0 2>/dev/null || true
+            [ -c /dev/console ] && echo -e '\033[?5h' > /dev/console && sleep 0.5 && echo -e '\033[?5l' > /dev/console
+            publish_ack "identify" "done"
+            ;;
+        status)
+            publish_status
+            publish_ack "status" "published"
+            ;;
+        get_config)
+            if [ -f "$CONFIG_FILE" ]; then
+                mqtt_pub "$TOPIC_BASE/config_report" "$(cat $CONFIG_FILE)"
+            fi
+            publish_ack "get_config" "done"
+            ;;
+        check_update)
+            publish_ack "check_update" "checking"
+            # Run update check in background so it doesn't block
+            /usr/bin/update.sh > /tmp/update.log 2>&1 &
+            ;;
+        *)
+            logger -t uxplay-agent "Unknown command: $cmd"
+            publish_ack "$cmd" "unknown"
+            ;;
+    esac
+}
+
+# -----------------------------------------------------------------------------
+# Main Loop
+# -----------------------------------------------------------------------------
+cleanup() {
+    logger -t uxplay-agent "Shutting down..."
+    publish_status "false"
+    rm -f "$PID_FILE"
+    exit 0
+}
+
+# Status publisher (background)
+status_loop() {
+    while true; do
+        publish_status
+        sleep $STATUS_INTERVAL
+    done
+}
+
+# UxPlay watchdog (background)
+watchdog_loop() {
+    while true; do
+        sleep $WATCHDOG_INTERVAL
+        if [ -f "$CONFIG_FILE" ]; then
+            local enabled=$(json_get "$(cat $CONFIG_FILE)" "enabled")
+            if [ "$enabled" != "false" ] && ! pgrep -x uxplay >/dev/null 2>&1; then
+                logger -t uxplay-agent "UxPlay not running, restarting..."
+                start_uxplay
+            fi
+        fi
+    done
+}
+
+# Config subscriber
+config_loop() {
+    mqtt_sub "$TOPIC_BASE/config" | while read -r line; do
+        local topic=$(echo "$line" | cut -d' ' -f1)
+        local payload=$(echo "$line" | cut -d' ' -f2-)
+        
+        if [ -n "$payload" ] && [ "$payload" != "(null)" ]; then
+            logger -t uxplay-agent "Config received"
+            apply_config "$payload"
+        fi
+    done
+}
+
+# Command subscriber
+command_loop() {
+    mqtt_sub "$TOPIC_BASE/command" | while read -r line; do
+        local topic=$(echo "$line" | cut -d' ' -f1)
+        local payload=$(echo "$line" | cut -d' ' -f2-)
+        
+        if [ -n "$payload" ]; then
+            handle_command "$payload"
+        fi
+    done
+}
+
+# Broadcast subscribers
+broadcast_config_loop() {
+    mqtt_sub "uxplay/broadcast/config" | while read -r line; do
+        local payload=$(echo "$line" | cut -d' ' -f2-)
+        if [ -n "$payload" ]; then
+            logger -t uxplay-agent "Broadcast config received"
+            apply_config "$payload"
+        fi
+    done
+}
+
+broadcast_command_loop() {
+    mqtt_sub "uxplay/broadcast/command" | while read -r line; do
+        local payload=$(echo "$line" | cut -d' ' -f2-)
+        if [ -n "$payload" ]; then
+            handle_command "$payload"
+        fi
+    done
+}
+
+main() {
+    logger -t uxplay-agent "Starting UxPlay Fleet Agent"
+    logger -t uxplay-agent "Device ID: $DEVICE_ID"
+    logger -t uxplay-agent "MQTT Broker: $MQTT_BROKER:$MQTT_PORT"
+    
+    # Setup
+    mkdir -p "$STATE_DIR"
+    echo $$ > "$PID_FILE"
+    trap cleanup EXIT INT TERM
+    
+    # Wait for network
+    sleep 5
+    
+    # Display splash screen
+    if [ -x /usr/bin/uxplay-splash ]; then
+        /usr/bin/uxplay-splash update &
+    fi
+    
+    # Announce presence
+    announce
+    
+    # Load existing config and start uxplay
+    if [ -f "$CONFIG_FILE" ]; then
+        generate_uxplayrc
+        local enabled=$(json_get "$(cat $CONFIG_FILE)" "enabled")
+        [ "$enabled" != "false" ] && start_uxplay
+    fi
+    
+    # Initial status
+    publish_status
+    
+    # Start background loops
+    status_loop &
+    watchdog_loop &
+    config_loop &
+    command_loop &
+    broadcast_config_loop &
+    broadcast_command_loop &
+    
+    # Wait forever
+    wait
+}
+
+# -----------------------------------------------------------------------------
+# Entry Point
+# -----------------------------------------------------------------------------
+case "${1:-}" in
+    --help|-h)
+        echo "Usage: $0 [--daemon]"
+        echo "  Runs UxPlay Fleet Management Agent"
+        echo ""
+        echo "Environment:"
+        echo "  MQTT_BROKER  - Broker hostname (default: mqtt.local)"
+        echo "  MQTT_PORT    - Broker port (default: 1883)"
+        echo ""
+        echo "Config files:"
+        echo "  /boot/mqtt.conf      - Override MQTT settings"
+        echo "  /etc/uxplay/config.json - Device configuration"
+        exit 0
+        ;;
+    *)
+        main
+        ;;
+esac

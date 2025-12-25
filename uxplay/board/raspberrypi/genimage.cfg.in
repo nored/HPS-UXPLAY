@@ -1,0 +1,39 @@
+# =============================================================================
+# A/B Partition Layout for OTA Updates
+# =============================================================================
+# Partition 1 (mmcblk0p1): boot - FAT32, kernel + DTBs + config
+# Partition 2 (mmcblk0p2): rootfs A - ext4
+# Partition 3 (mmcblk0p3): rootfs B - ext4 (for A/B updates)
+#
+# update.sh flashes to inactive partition and updates cmdline.txt
+
+image boot.vfat {
+        vfat {
+                label = "bootfs"
+                files = {
+#BOOT_FILES#
+                }
+        }
+        size = 64M
+}
+
+image sdcard.img {
+        hdimage {
+        }
+
+        partition boot {
+                partition-type = 0xC
+                bootable = "true"
+                image = "boot.vfat"
+        }
+
+        partition rootfs_a {
+                partition-type = 0x83
+                image = "rootfsA.ext4"
+        }
+
+        partition rootfs_b {
+                partition-type = 0x83
+                image = "rootfsB.ext4"
+        }
+}

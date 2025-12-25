@@ -1,0 +1,96 @@
+services:
+  bash: &base
+    build: .
+    image: builder
+    volumes:
+      - .:/app
+    working_dir: /app/buildroot
+    command: bash
+
+  builder: &generate_image
+    <<: *base
+    command: 
+      - /bin/bash
+      - -c
+      - |
+        export FORCE_UNSAFE_CONFIGURE=1
+        
+        # Clean previous outputs for this board
+        rm -rf /app/images/sdcard-$${BOARD_NAME}.img.xz
+        rm -rf /app/update/$${BOARD_NAME}/
+        
+        # Build
+        make BR2_EXTERNAL="/app/uxplay" O=output/$${BOARD_NAME} $${BOARD_NAME}_defconfig 
+        cd output/$${BOARD_NAME} && make 
+        
+        # Copy SD card image
+        mkdir -p /app/images/
+        xz -c images/sdcard.img > /app/images/sdcard-$${BOARD_NAME}.img.xz
+        
+        # Copy OTA update files if they exist
+        if [ -f images/signed_encrypted_update.pkg ]; then
+          mkdir -p /app/update/$${BOARD_NAME}/
+          cp images/signed_encrypted_update.pkg /app/update/$${BOARD_NAME}/
+          cp images/signed_update.sig /app/update/$${BOARD_NAME}/
+          echo "OTA update files copied to /app/update/$${BOARD_NAME}/"
+        fi
+        
+        echo "Build complete:"
+        echo "  Image: /app/images/sdcard-$${BOARD_NAME}.img.xz"
+
+  rpi4:
+    <<: *generate_image
+    environment:
+      - BOARD_NAME=raspberrypi4_64
+
+  rpi3:
+    <<: *generate_image
+    environment:
+      - BOARD_NAME=raspberrypi3_64
+
+  rpi0w:
+    <<: *generate_image
+    environment:
+      - BOARD_NAME=raspberrypi0w
+
+  rpi02w:
+    <<: *generate_image
+    environment:
+      - BOARD_NAME=raspberrypizero2w
+
+  clean:
+    build: .
+    image: builder
+    user: root
+    volumes:
+      - .:/app
+    working_dir: /app
+    command:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        echo "Cleaning all Buildroot outputs"
+        rm -rf /app/buildroot/output
+        mkdir -p /app/buildroot/output
+        rm -rf /app/images/*
+        rm -rf /app/update/*
+        echo "Clean complete"
+
+  clean-rpi02w:
+    build: .
+    image: builder
+    user: root
+    volumes:
+      - .:/app
+    working_dir: /app
+    command:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        echo "Cleaning rpi02w output"
+        rm -rf /app/buildroot/output/raspberrypizero2w
+        rm -f /app/images/sdcard-raspberrypizero2w.img.xz
+        rm -rf /app/update/raspberrypizero2w
+        echo "Clean complete"
