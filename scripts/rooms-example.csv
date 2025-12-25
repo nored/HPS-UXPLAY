@@ -1,0 +1,37 @@
+# UxPlay Fleet - Hotel Conference Rooms
+# Format: device_id,room_name,pin
+# 
+# Device IDs: Get from device MAC address (without colons)
+# Room Name: Display name shown on AirPlay devices
+# PIN: Optional 4-digit code (leave empty for no PIN)
+#
+# Example deployment for a hotel:
+
+# Ground Floor - Ballrooms
+a1b2c3000001,Grand Ballroom A,1001
+a1b2c3000002,Grand Ballroom B,1002
+a1b2c3000003,Grand Ballroom C,1003
+
+# First Floor - Boardrooms
+a1b2c3000101,Executive Boardroom,2001
+a1b2c3000102,Boardroom 1,2002
+a1b2c3000103,Boardroom 2,2003
+a1b2c3000104,Boardroom 3,2004
+
+# Second Floor - Meeting Rooms
+a1b2c3000201,Meeting Room 201,
+a1b2c3000202,Meeting Room 202,
+a1b2c3000203,Meeting Room 203,
+a1b2c3000204,Meeting Room 204,
+a1b2c3000205,Meeting Room 205,
+a1b2c3000206,Meeting Room 206,
+
+# Third Floor - Training Rooms
+a1b2c3000301,Training Center A,3001
+a1b2c3000302,Training Center B,3002
+a1b2c3000303,Seminar Room 1,
+a1b2c3000304,Seminar Room 2,
+
+# VIP Areas
+a1b2c3000901,Presidential Suite,9001
+a1b2c3000902,Ambassador Room,9002

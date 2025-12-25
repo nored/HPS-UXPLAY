@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  # =============================================================================
+  # MQTT Broker
+  # =============================================================================
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: uxplay-mqtt
+    restart: unless-stopped
+    ports:
+      - "1883:1883"    # MQTT
+      - "9001:9001"    # WebSocket (for admin console)
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    networks:
+      - uxplay-net
+
+  # =============================================================================
+  # Admin Console (Optional - Static file server)
+  # =============================================================================
+  admin-console:
+    image: nginx:alpine
+    container_name: uxplay-admin
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ../admin-console:/usr/share/nginx/html:ro
+    networks:
+      - uxplay-net
+    depends_on:
+      - mosquitto
+
+networks:
+  uxplay-net:
+    driver: bridge
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:
+
+# =============================================================================
+# Usage
+# =============================================================================
+# 
+# Start services:
+#   cd uxplay-fleet/broker
+#   docker-compose up -d
+#
+# View logs:
+#   docker-compose logs -f mosquitto
+#
+# Stop services:
+#   docker-compose down
+#
+# Access:
+#   - Admin Console: http://localhost:8080
+#   - MQTT Broker: localhost:1883
+#   - MQTT WebSocket: localhost:9001
+#
+# Test MQTT:
+#   mosquitto_sub -h localhost -t 'uxplay/#' -v
+#   mosquitto_pub -h localhost -t 'uxplay/test' -m 'hello'

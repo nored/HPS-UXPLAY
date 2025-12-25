@@ -1,0 +1,1157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UxPlay Fleet Control | Hotel Conference Rooms</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0a0f1a;
+            --bg-secondary: #111827;
+            --bg-card: #1a2234;
+            --bg-card-hover: #232d42;
+            --accent-green: #10b981;
+            --accent-green-dim: rgba(16, 185, 129, 0.15);
+            --accent-red: #ef4444;
+            --accent-red-dim: rgba(239, 68, 68, 0.15);
+            --accent-yellow: #f59e0b;
+            --accent-yellow-dim: rgba(245, 158, 11, 0.15);
+            --accent-blue: #3b82f6;
+            --accent-blue-dim: rgba(59, 130, 246, 0.15);
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --border: #2d3748;
+            --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.5;
+        }
+
+        /* Header */
+        .header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .header h1::before {
+            content: "📺";
+            font-size: 1.25rem;
+        }
+
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            padding: 0.5rem 1rem;
+            border-radius: 9999px;
+            background: var(--accent-red-dim);
+            color: var(--accent-red);
+            font-family: 'JetBrains Mono', monospace;
+            transition: all 0.3s ease;
+        }
+
+        .connection-status.connected {
+            background: var(--accent-green-dim);
+            color: var(--accent-green);
+        }
+
+        .connection-status::before {
+            content: "";
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        /* Config Panel */
+        .config-bar {
+            background: var(--bg-secondary);
+            padding: 1rem 2rem;
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .config-bar label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+        }
+
+        .config-bar input {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 0.5rem 0.75rem;
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.875rem;
+            width: 200px;
+        }
+
+        .config-bar input:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        .btn {
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            border: none;
+            font-family: 'Outfit', sans-serif;
+            font-weight: 600;
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary {
+            background: var(--accent-blue);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #2563eb;
+            transform: translateY(-1px);
+        }
+
+        .btn-success {
+            background: var(--accent-green);
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #059669;
+        }
+
+        .btn-danger {
+            background: var(--accent-red);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .btn-ghost {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+
+        .btn-ghost:hover {
+            background: var(--bg-card);
+            color: var(--text-primary);
+        }
+
+        /* Stats Bar */
+        .stats-bar {
+            display: flex;
+            gap: 2rem;
+            padding: 1.5rem 2rem;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .stat-value.online { color: var(--accent-green); }
+        .stat-value.offline { color: var(--accent-red); }
+        .stat-value.warning { color: var(--accent-yellow); }
+
+        .stat-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text-muted);
+        }
+
+        /* Device Grid */
+        .main {
+            padding: 2rem;
+        }
+
+        .device-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .device-card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+
+        .device-card:hover {
+            background: var(--bg-card-hover);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow);
+        }
+
+        .device-card.offline {
+            opacity: 0.6;
+        }
+
+        .device-header {
+            padding: 1rem 1.25rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .device-name {
+            font-size: 1.125rem;
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        .device-hostname {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .status-badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .status-badge.online {
+            background: var(--accent-green-dim);
+            color: var(--accent-green);
+        }
+
+        .status-badge.offline {
+            background: var(--accent-red-dim);
+            color: var(--accent-red);
+        }
+
+        .status-badge.streaming {
+            background: var(--accent-blue-dim);
+            color: var(--accent-blue);
+            animation: pulse 1.5s infinite;
+        }
+
+        .device-body {
+            padding: 1rem 1.25rem;
+        }
+
+        .device-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .device-stat {
+            text-align: center;
+        }
+
+        .device-stat-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .device-stat-label {
+            font-size: 0.625rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+        }
+
+        .device-meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border);
+        }
+
+        .device-actions {
+            padding: 1rem 1.25rem;
+            background: rgba(0, 0, 0, 0.2);
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .device-actions .btn {
+            flex: 1;
+            min-width: 80px;
+            justify-content: center;
+            font-size: 0.75rem;
+            padding: 0.4rem 0.75rem;
+        }
+
+        /* Modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.75);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.2s ease;
+        }
+
+        .modal-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .modal {
+            background: var(--bg-card);
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            width: 90%;
+            max-width: 600px;
+            max-height: 90vh;
+            overflow-y: auto;
+            transform: scale(0.95);
+            transition: transform 0.2s ease;
+        }
+
+        .modal-overlay.active .modal {
+            transform: scale(1);
+        }
+
+        .modal-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h2 {
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 0.5rem;
+            line-height: 1;
+        }
+
+        .modal-close:hover {
+            color: var(--text-primary);
+        }
+
+        .modal-body {
+            padding: 1.5rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.25rem;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.875rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--text-secondary);
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.875rem;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        .form-group small {
+            display: block;
+            margin-top: 0.5rem;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        .modal-footer {
+            padding: 1.5rem;
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.75rem;
+        }
+
+        /* Toast notifications */
+        .toast-container {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            z-index: 2000;
+        }
+
+        .toast {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            box-shadow: var(--shadow);
+            animation: slideIn 0.3s ease;
+            min-width: 300px;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .toast.success { border-left: 3px solid var(--accent-green); }
+        .toast.error { border-left: 3px solid var(--accent-red); }
+        .toast.info { border-left: 3px solid var(--accent-blue); }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: var(--text-muted);
+        }
+
+        .empty-state h3 {
+            font-size: 1.25rem;
+            margin-bottom: 0.5rem;
+            color: var(--text-secondary);
+        }
+
+        /* Temperature colors */
+        .temp-good { color: var(--accent-green); }
+        .temp-warm { color: var(--accent-yellow); }
+        .temp-hot { color: var(--accent-red); }
+
+        /* Log panel */
+        .log-panel {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 200px;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border);
+            transform: translateY(100%);
+            transition: transform 0.3s ease;
+            z-index: 50;
+        }
+
+        .log-panel.active {
+            transform: translateY(0);
+        }
+
+        .log-header {
+            padding: 0.75rem 1.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .log-content {
+            height: calc(100% - 48px);
+            overflow-y: auto;
+            padding: 0.75rem 1.5rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            line-height: 1.6;
+        }
+
+        .log-entry {
+            color: var(--text-muted);
+        }
+
+        .log-entry.error { color: var(--accent-red); }
+        .log-entry.success { color: var(--accent-green); }
+        .log-entry.info { color: var(--accent-blue); }
+
+        /* Toggle for log panel */
+        .log-toggle {
+            position: fixed;
+            bottom: 1rem;
+            left: 1rem;
+            z-index: 60;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <h1>UxPlay Fleet Control</h1>
+        <div class="connection-status" id="connectionStatus">
+            Disconnected
+        </div>
+    </header>
+
+    <div class="config-bar">
+        <div>
+            <label>MQTT Broker</label><br>
+            <input type="text" id="brokerHost" value="localhost" placeholder="mqtt.local">
+        </div>
+        <div>
+            <label>WebSocket Port</label><br>
+            <input type="number" id="brokerPort" value="9001" placeholder="9001">
+        </div>
+        <button class="btn btn-primary" id="connectBtn" onclick="toggleConnection()">
+            Connect
+        </button>
+        <button class="btn btn-ghost" onclick="refreshAll()">
+            ↻ Refresh All
+        </button>
+        <button class="btn btn-ghost" onclick="toggleLogPanel()">
+            📋 Logs
+        </button>
+    </div>
+
+    <div class="stats-bar">
+        <div class="stat">
+            <div class="stat-value online" id="statOnline">0</div>
+            <div class="stat-label">Online</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value offline" id="statOffline">0</div>
+            <div class="stat-label">Offline</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value warning" id="statStreaming">0</div>
+            <div class="stat-label">Streaming</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value" id="statTotal">0</div>
+            <div class="stat-label">Total Devices</div>
+        </div>
+    </div>
+
+    <main class="main">
+        <div class="device-grid" id="deviceGrid">
+            <div class="empty-state">
+                <h3>No devices connected</h3>
+                <p>Connect to the MQTT broker to see devices</p>
+            </div>
+        </div>
+    </main>
+
+    <!-- Edit Device Modal -->
+    <div class="modal-overlay" id="editModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Configure Device</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editDeviceId">
+                
+                <div class="form-group">
+                    <label>Room Name</label>
+                    <input type="text" id="editRoomName" placeholder="Conference Room A">
+                    <small>Display name shown on AirPlay devices</small>
+                </div>
+
+                <div class="form-group">
+                    <label>Hostname</label>
+                    <input type="text" id="editHostname" placeholder="uxplay-conf-a">
+                    <small>System hostname (requires reboot)</small>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>PIN Mode</label>
+                        <select id="editPinMode">
+                            <option value="none">No PIN</option>
+                            <option value="fixed">Fixed PIN</option>
+                            <option value="random">Random PIN</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>PIN Code</label>
+                        <input type="text" id="editPin" placeholder="0000" maxlength="4" pattern="[0-9]{4}">
+                        <small>4-digit code (for fixed PIN)</small>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Password (alternative to PIN)</label>
+                    <input type="text" id="editPassword" placeholder="Leave empty to use PIN instead">
+                    <small>Minimum 6 characters if used</small>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Resolution</label>
+                        <select id="editResolution">
+                            <option value="1920x1080">1080p (1920x1080)</option>
+                            <option value="1280x720">720p (1280x720)</option>
+                            <option value="3840x2160">4K (3840x2160)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Frame Rate</label>
+                        <select id="editFps">
+                            <option value="30">30 fps</option>
+                            <option value="60">60 fps</option>
+                            <option value="24">24 fps</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Video Sink</label>
+                        <input type="text" id="editVideosink" placeholder="autovideosink">
+                    </div>
+                    <div class="form-group">
+                        <label>Audio Sink</label>
+                        <input type="text" id="editAudiosink" placeholder="autoaudiosink">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="editFullscreen" checked>
+                        Fullscreen Mode
+                    </label>
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="editEnabled" checked>
+                        Service Enabled
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-success" onclick="saveConfig()">Save & Apply</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Panel -->
+    <div class="log-panel" id="logPanel">
+        <div class="log-header">
+            <span>Event Log</span>
+            <button class="btn btn-ghost" onclick="clearLogs()">Clear</button>
+        </div>
+        <div class="log-content" id="logContent"></div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script>
+        // State
+        let mqttClient = null;
+        let devices = new Map();
+        let connected = false;
+
+        // MQTT Topics
+        const TOPICS = {
+            DISCOVER: 'uxplay/discover',
+            STATUS_WILDCARD: 'uxplay/devices/+/status',
+            ACK_WILDCARD: 'uxplay/devices/+/ack',
+            BROADCAST_CONFIG: 'uxplay/broadcast/config',
+            BROADCAST_COMMAND: 'uxplay/broadcast/command'
+        };
+
+        // Connect to MQTT
+        function toggleConnection() {
+            if (connected) {
+                disconnect();
+            } else {
+                connect();
+            }
+        }
+
+        function connect() {
+            const host = document.getElementById('brokerHost').value;
+            const port = parseInt(document.getElementById('brokerPort').value);
+
+            log(`Connecting to ${host}:${port}...`, 'info');
+
+            mqttClient = new Paho.Client(host, port, `admin-console-${Date.now()}`);
+
+            mqttClient.onConnectionLost = onConnectionLost;
+            mqttClient.onMessageArrived = onMessageArrived;
+
+            mqttClient.connect({
+                onSuccess: onConnect,
+                onFailure: onConnectFailure,
+                timeout: 10
+            });
+        }
+
+        function disconnect() {
+            if (mqttClient && connected) {
+                mqttClient.disconnect();
+                setConnected(false);
+                log('Disconnected from broker', 'info');
+            }
+        }
+
+        function onConnect() {
+            log('Connected to MQTT broker', 'success');
+            setConnected(true);
+
+            // Subscribe to topics
+            mqttClient.subscribe(TOPICS.DISCOVER);
+            mqttClient.subscribe(TOPICS.STATUS_WILDCARD);
+            mqttClient.subscribe(TOPICS.ACK_WILDCARD);
+
+            toast('Connected to MQTT broker', 'success');
+        }
+
+        function onConnectFailure(error) {
+            log(`Connection failed: ${error.errorMessage}`, 'error');
+            toast('Connection failed', 'error');
+            setConnected(false);
+        }
+
+        function onConnectionLost(response) {
+            if (response.errorCode !== 0) {
+                log(`Connection lost: ${response.errorMessage}`, 'error');
+                toast('Connection lost', 'error');
+            }
+            setConnected(false);
+        }
+
+        function onMessageArrived(message) {
+            const topic = message.destinationName;
+            let payload;
+
+            try {
+                payload = JSON.parse(message.payloadString);
+            } catch (e) {
+                log(`Invalid JSON on ${topic}`, 'error');
+                return;
+            }
+
+            // Extract device ID from topic
+            const topicParts = topic.split('/');
+
+            if (topic === TOPICS.DISCOVER) {
+                handleDiscover(payload);
+            } else if (topic.includes('/status')) {
+                const deviceId = topicParts[2];
+                handleStatus(deviceId, payload);
+            } else if (topic.includes('/ack')) {
+                const deviceId = topicParts[2];
+                handleAck(deviceId, payload);
+            }
+        }
+
+        function handleDiscover(payload) {
+            log(`Device discovered: ${payload.device_id} (${payload.ip})`, 'info');
+        }
+
+        function handleStatus(deviceId, payload) {
+            devices.set(deviceId, {
+                ...payload,
+                lastUpdate: Date.now()
+            });
+            renderDevices();
+            updateStats();
+        }
+
+        function handleAck(deviceId, payload) {
+            log(`ACK from ${deviceId}: ${payload.command} - ${payload.status}`, 
+                payload.status === 'error' ? 'error' : 'success');
+            
+            if (payload.status === 'error') {
+                toast(`Command failed: ${payload.error || payload.command}`, 'error');
+            } else {
+                toast(`${payload.command} completed`, 'success');
+            }
+        }
+
+        // Device rendering
+        function renderDevices() {
+            const grid = document.getElementById('deviceGrid');
+            
+            if (devices.size === 0) {
+                grid.innerHTML = `
+                    <div class="empty-state">
+                        <h3>No devices connected</h3>
+                        <p>Waiting for device status updates...</p>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '';
+            for (const [id, device] of devices) {
+                const isOnline = device.online !== false && (Date.now() - device.lastUpdate < 60000);
+                const isStreaming = device.airplay_client && device.airplay_client !== 'null';
+                
+                let statusClass = isOnline ? 'online' : 'offline';
+                let statusText = isOnline ? 'Online' : 'Offline';
+                if (isStreaming) {
+                    statusClass = 'streaming';
+                    statusText = 'Streaming';
+                }
+
+                const tempClass = device.cpu_temp > 70 ? 'temp-hot' : 
+                                  device.cpu_temp > 55 ? 'temp-warm' : 'temp-good';
+
+                const uptimeStr = formatUptime(device.uptime || 0);
+                const loadStr = device.load ? device.load.map(l => l.toFixed(2)).join(' / ') : '- / - / -';
+
+                html += `
+                    <div class="device-card ${isOnline ? '' : 'offline'}" onclick="openEditModal('${id}')">
+                        <div class="device-header">
+                            <div>
+                                <div class="device-name">${escapeHtml(device.room_name || 'Unknown Room')}</div>
+                                <div class="device-hostname">${escapeHtml(device.hostname || id)}</div>
+                            </div>
+                            <span class="status-badge ${statusClass}">${statusText}</span>
+                        </div>
+                        <div class="device-body">
+                            <div class="device-stats">
+                                <div class="device-stat">
+                                    <div class="device-stat-value ${tempClass}">${device.cpu_temp?.toFixed(1) || '-'}°</div>
+                                    <div class="device-stat-label">CPU Temp</div>
+                                </div>
+                                <div class="device-stat">
+                                    <div class="device-stat-value">${device.memory_free_mb || '-'}</div>
+                                    <div class="device-stat-label">Free MB</div>
+                                </div>
+                                <div class="device-stat">
+                                    <div class="device-stat-value">${device.uxplay_running ? '✓' : '✗'}</div>
+                                    <div class="device-stat-label">UxPlay</div>
+                                </div>
+                            </div>
+                            <div class="device-meta">
+                                <span>IP: ${device.ip || '-'}</span>
+                                <span>Up: ${uptimeStr}</span>
+                            </div>
+                        </div>
+                        <div class="device-actions" onclick="event.stopPropagation()">
+                            <button class="btn btn-ghost" onclick="sendCommand('${id}', 'restart_uxplay')">Restart</button>
+                            <button class="btn btn-ghost" onclick="sendCommand('${id}', 'identify')">Identify</button>
+                            <button class="btn btn-danger" onclick="confirmReboot('${id}')">Reboot</button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            grid.innerHTML = html;
+        }
+
+        function updateStats() {
+            let online = 0, offline = 0, streaming = 0;
+            
+            for (const device of devices.values()) {
+                const isOnline = device.online !== false && (Date.now() - device.lastUpdate < 60000);
+                if (isOnline) {
+                    online++;
+                    if (device.airplay_client && device.airplay_client !== 'null') {
+                        streaming++;
+                    }
+                } else {
+                    offline++;
+                }
+            }
+
+            document.getElementById('statOnline').textContent = online;
+            document.getElementById('statOffline').textContent = offline;
+            document.getElementById('statStreaming').textContent = streaming;
+            document.getElementById('statTotal').textContent = devices.size;
+        }
+
+        // Commands
+        function sendCommand(deviceId, command, params = {}) {
+            if (!connected) {
+                toast('Not connected to broker', 'error');
+                return;
+            }
+
+            const topic = `uxplay/devices/${deviceId}/command`;
+            const payload = JSON.stringify({ command, ...params });
+            
+            const message = new Paho.Message(payload);
+            message.destinationName = topic;
+            message.qos = 1;
+            
+            mqttClient.send(message);
+            log(`Sent ${command} to ${deviceId}`, 'info');
+        }
+
+        function sendConfig(deviceId, config) {
+            if (!connected) {
+                toast('Not connected to broker', 'error');
+                return;
+            }
+
+            const topic = `uxplay/devices/${deviceId}/config`;
+            config.config_version = new Date().toISOString();
+            const payload = JSON.stringify(config);
+            
+            const message = new Paho.Message(payload);
+            message.destinationName = topic;
+            message.qos = 1;
+            message.retained = true;
+            
+            mqttClient.send(message);
+            log(`Sent config to ${deviceId}`, 'info');
+        }
+
+        function confirmReboot(deviceId) {
+            const device = devices.get(deviceId);
+            const name = device?.room_name || deviceId;
+            
+            if (confirm(`Reboot "${name}"? The device will be offline for ~30 seconds.`)) {
+                sendCommand(deviceId, 'reboot');
+            }
+        }
+
+        function refreshAll() {
+            for (const deviceId of devices.keys()) {
+                sendCommand(deviceId, 'status');
+            }
+            toast('Requested status from all devices', 'info');
+        }
+
+        // Modal
+        function openEditModal(deviceId) {
+            const device = devices.get(deviceId);
+            if (!device) return;
+
+            document.getElementById('editDeviceId').value = deviceId;
+            document.getElementById('editRoomName').value = device.room_name || '';
+            document.getElementById('editHostname').value = device.hostname || '';
+            document.getElementById('editPinMode').value = device.pin_mode || 'none';
+            document.getElementById('editPin').value = device.pin || '';
+            document.getElementById('editPassword').value = device.password || '';
+            document.getElementById('editResolution').value = device.resolution || '1920x1080';
+            document.getElementById('editFps').value = device.fps || '30';
+            document.getElementById('editVideosink').value = device.videosink || 'autovideosink';
+            document.getElementById('editAudiosink').value = device.audiosink || 'autoaudiosink';
+            document.getElementById('editFullscreen').checked = device.fullscreen !== false;
+            document.getElementById('editEnabled').checked = device.enabled !== false;
+
+            document.getElementById('editModal').classList.add('active');
+        }
+
+        function closeModal() {
+            document.getElementById('editModal').classList.remove('active');
+        }
+
+        function saveConfig() {
+            const deviceId = document.getElementById('editDeviceId').value;
+            
+            const config = {
+                room_name: document.getElementById('editRoomName').value,
+                hostname: document.getElementById('editHostname').value,
+                pin_mode: document.getElementById('editPinMode').value,
+                pin: document.getElementById('editPin').value,
+                password: document.getElementById('editPassword').value,
+                resolution: document.getElementById('editResolution').value,
+                fps: parseInt(document.getElementById('editFps').value),
+                videosink: document.getElementById('editVideosink').value,
+                audiosink: document.getElementById('editAudiosink').value,
+                fullscreen: document.getElementById('editFullscreen').checked,
+                enabled: document.getElementById('editEnabled').checked
+            };
+
+            sendConfig(deviceId, config);
+            closeModal();
+            toast('Configuration sent', 'success');
+        }
+
+        // UI Helpers
+        function setConnected(state) {
+            connected = state;
+            const status = document.getElementById('connectionStatus');
+            const btn = document.getElementById('connectBtn');
+            
+            if (state) {
+                status.textContent = 'Connected';
+                status.classList.add('connected');
+                btn.textContent = 'Disconnect';
+            } else {
+                status.textContent = 'Disconnected';
+                status.classList.remove('connected');
+                btn.textContent = 'Connect';
+            }
+        }
+
+        function formatUptime(seconds) {
+            if (!seconds) return '-';
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            
+            if (days > 0) return `${days}d ${hours}h`;
+            if (hours > 0) return `${hours}h ${mins}m`;
+            return `${mins}m`;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Logging
+        function log(message, type = '') {
+            const content = document.getElementById('logContent');
+            const time = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${time}] ${message}`;
+            content.appendChild(entry);
+            content.scrollTop = content.scrollHeight;
+        }
+
+        function clearLogs() {
+            document.getElementById('logContent').innerHTML = '';
+        }
+
+        function toggleLogPanel() {
+            document.getElementById('logPanel').classList.toggle('active');
+        }
+
+        // Toast notifications
+        function toast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.animation = 'slideIn 0.3s ease reverse';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        // Mark stale devices
+        setInterval(() => {
+            let updated = false;
+            for (const [id, device] of devices) {
+                if (Date.now() - device.lastUpdate > 60000) {
+                    device.online = false;
+                    updated = true;
+                }
+            }
+            if (updated) {
+                renderDevices();
+                updateStats();
+            }
+        }, 10000);
+
+        // Close modal on escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeModal();
+        });
+
+        // Close modal on backdrop click
+        document.getElementById('editModal').addEventListener('click', (e) => {
+            if (e.target.classList.contains('modal-overlay')) closeModal();
+        });
+
+        // Initial log
+        log('Admin console initialized', 'info');
+    </script>
+</body>
+</html>
